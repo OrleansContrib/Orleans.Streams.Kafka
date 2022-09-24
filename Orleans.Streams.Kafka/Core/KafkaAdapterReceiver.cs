@@ -23,6 +23,7 @@ public class KafkaAdapterReceiver : IQueueAdapterReceiver
 	private readonly SerializationManager _serializationManager;
 	private readonly IGrainFactory _grainFactory;
 	private readonly IExternalStreamDeserializer _externalDeserializer;
+    private readonly IStreamIdSelector _streamIdSelector;
 	private readonly QueueProperties _queueProperties;
 
 	private IConsumer<byte[], byte[]> _consumer;
@@ -36,7 +37,8 @@ public class KafkaAdapterReceiver : IQueueAdapterReceiver
 		SerializationManager serializationManager,
 		ILoggerFactory loggerFactory,
 		IGrainFactory grainFactory,
-		IExternalStreamDeserializer externalDeserializer
+		IExternalStreamDeserializer externalDeserializer,
+        IStreamIdSelector streamIdSelector
 	)
 	{
 		_options = options ?? throw new ArgumentNullException(nameof(options));
@@ -46,6 +48,7 @@ public class KafkaAdapterReceiver : IQueueAdapterReceiver
 		_serializationManager = serializationManager;
 		_grainFactory = grainFactory;
 		_externalDeserializer = externalDeserializer;
+        _streamIdSelector = streamIdSelector;
 		_logger = loggerFactory.CreateLogger<KafkaAdapterReceiver>();
 	}
 
@@ -163,13 +166,16 @@ public class KafkaAdapterReceiver : IQueueAdapterReceiver
                     break;
                 }
 
+                var streamId = _streamIdSelector.GetStreamId(consumeResult);
+
                 var batchContainer = consumeResult.ToBatchContainer(
 					new SerializationContext
 					{
 						SerializationManager = _serializationManager,
 						ExternalStreamDeserializer = _externalDeserializer
 					},
-					_queueProperties
+					_queueProperties,
+                    streamId
 				);
 
 				await TrackMessage(batchContainer);

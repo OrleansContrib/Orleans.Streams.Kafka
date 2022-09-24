@@ -1,3 +1,14 @@
+## [6.2.0](https://github.com/OrleansContrib/Orleans.Streams.Kafka/compare/6.0.0...6.2.0) (2022-09-24)
+
+### Features
+
+- Update Orleans v3.6.5
+- Add extension to support stream id selection (changes applied from a PR by https://github.com/serpargu - thanks a lot)
+
+### BREAKING CHANGES
+
+- Update Orleans v3.6.5
+
 ## [6.0.0](https://github.com/jonathansant/orleans.streams.kafka/compare/5.0.0...6.0.0) (2022-03-09)
 
 ### Features

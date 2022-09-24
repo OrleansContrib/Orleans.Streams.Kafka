@@ -8,7 +8,7 @@
   <PropertyGroup>
     <Authors>Jonathan Sant</Authors>
     <Company>Sucrose</Company>
-    <RepositoryUrl>https://github.com/jonathansant/Orleans.Streams.Kafka</RepositoryUrl>
+    <RepositoryUrl>https://github.com/OrleansContrib/Orleans.Streams.Kafka</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
@@ -26,9 +26,9 @@
 
   <!-- Shared Package Versions -->
   <PropertyGroup>
-    <OrleansVersion>3.6.0</OrleansVersion>
+    <OrleansVersion>3.6.5</OrleansVersion>
     <StreamUtilsVersion>11.1.0</StreamUtilsVersion>
-    <ConfluentKafkaVersion>1.8.2</ConfluentKafkaVersion>
+    <ConfluentKafkaVersion>1.9.3</ConfluentKafkaVersion>
     <ConfluentAvroVersion>1.7.7.7</ConfluentAvroVersion>
     <MicrosoftExtensionsVersion>6.0.0</MicrosoftExtensionsVersion>
   </PropertyGroup>

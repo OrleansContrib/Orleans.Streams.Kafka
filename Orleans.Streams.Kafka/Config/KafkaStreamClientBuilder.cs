@@ -1,5 +1,6 @@
 using Orleans.Hosting;
 using Orleans.Runtime;
+using Orleans.Streams.Kafka.Consumer;
 using Orleans.Streams.Utils.Serialization;
 using System;
 
@@ -32,7 +33,29 @@ public class KafkaStreamClientBuilder
 
 		return this;
 	}
+    
+    public KafkaStreamClientBuilder AddStreamIdSelector<TSelector>()
+        where TSelector : class, IStreamIdSelector
+    {
+        _hostBuilder.ConfigureServices(services
+            => services.AddSingletonNamedService<IStreamIdSelector, TSelector>(_providerName)
+        );
 
+        return this;
+    }
+
+    public KafkaStreamClientBuilder AddStreamIdSelector<TSelector>(Func<IServiceProvider, string, TSelector> configure)
+        where TSelector : class, IStreamIdSelector
+    {
+        _hostBuilder.ConfigureServices(services
+            => services.AddSingletonNamedService<TSelector>(
+                _providerName,
+                (provider, name) => configure?.Invoke(provider, name))
+        );
+
+        return this;
+    }
+    
 	public KafkaStreamClientBuilder AddAvro(string schemaRegistryUrl)
 	{
 		_hostBuilder.AddAvro(_providerName, schemaRegistryUrl);

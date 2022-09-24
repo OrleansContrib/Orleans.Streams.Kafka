@@ -13,21 +13,20 @@ public static class ConsumeResultExtensions
 	public static KafkaBatchContainer ToBatchContainer(
 		this ConsumeResult<byte[], byte[]> result,
 		SerializationContext serializationContext,
-		QueueProperties queueProperties
+		QueueProperties queueProperties,
+        string streamId
 	)
 	{
 		var sequence = new EventSequenceTokenV2(result.Offset.Value);
 
 		if (queueProperties.IsExternal)
 		{
-			var key = Encoding.UTF8.GetString(result.Message.Key);
-
-			var message = serializationContext
+            var message = serializationContext
 				.ExternalStreamDeserializer
 				.Deserialize(queueProperties, queueProperties.ExternalContractType, result);
 
 			return new KafkaBatchContainer(
-				StreamProviderUtils.GenerateStreamGuid(key),
+                StreamProviderUtils.GenerateStreamGuid(streamId),
 				queueProperties.Namespace,
 				new List<object> { message },
 				null,

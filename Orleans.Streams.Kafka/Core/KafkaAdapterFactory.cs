@@ -7,6 +7,7 @@ using Orleans.Providers.Streams.Common;
 using Orleans.Runtime;
 using Orleans.Serialization;
 using Orleans.Streams.Kafka.Config;
+using Orleans.Streams.Kafka.Consumer;
 using Orleans.Streams.Kafka.Utils;
 using Orleans.Streams.Utils;
 using Orleans.Streams.Utils.Serialization;
@@ -19,11 +20,13 @@ namespace Orleans.Streams.Kafka.Core;
 
 public class KafkaAdapterFactory : IQueueAdapterFactory
 {
+    private static readonly IStreamIdSelector _defaultStreamIdSelector = new DefaultStreamIdSelector();
 	private readonly string _name;
 	private readonly KafkaStreamOptions _options;
 	private readonly SerializationManager _serializationManager;
 	private readonly ILoggerFactory _loggerFactory;
 	private readonly IGrainFactory _grainFactory;
+    private readonly IStreamIdSelector _streamIdSelector;
 	private readonly IExternalStreamDeserializer _externalDeserializer;
 	private readonly IQueueAdapterCache _adapterCache;
 	private readonly IStreamQueueMapper _streamQueueMapper;
@@ -38,8 +41,9 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
 		SimpleQueueCacheOptions cacheOptions,
 		SerializationManager serializationManager,
 		ILoggerFactory loggerFactory,
-		IGrainFactory grainFactory
-	) : this(name, options, cacheOptions, serializationManager, loggerFactory, grainFactory, null)
+		IGrainFactory grainFactory,
+        IStreamIdSelector streamIdSelector
+    ) : this(name, options, cacheOptions, serializationManager, loggerFactory, grainFactory, streamIdSelector, null)
 	{
 		if (options.Topics.Any(topic => topic.IsExternal))
         {
@@ -56,6 +60,7 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
 		SerializationManager serializationManager,
 		ILoggerFactory loggerFactory,
 		IGrainFactory grainFactory,
+        IStreamIdSelector streamIdSelector,
 		IExternalStreamDeserializer externalDeserializer
 	)
 	{
@@ -65,6 +70,7 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
 		_serializationManager = serializationManager;
 		_loggerFactory = loggerFactory;
 		_grainFactory = grainFactory;
+        _streamIdSelector = streamIdSelector;
 		_externalDeserializer = externalDeserializer;
 		_logger = loggerFactory.CreateLogger<KafkaAdapterFactory>();
 		_adminConfig = new AdminClientBuilder(options.ToAdminProperties());
@@ -94,7 +100,8 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
 			_serializationManager,
 			_loggerFactory,
 			_grainFactory,
-			_externalDeserializer
+			_externalDeserializer,
+            _streamIdSelector
 		));
 
 	public IQueueAdapterCache GetQueueAdapterCache()
@@ -111,6 +118,7 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
 		var streamsConfig = services.GetOptionsByName<KafkaStreamOptions>(name);
 		var cacheOptions = services.GetOptionsByName<SimpleQueueCacheOptions>(name);
 		var deserializer = services.GetServiceByName<IExternalStreamDeserializer>(name);
+        var streamIdSelector = services.GetServiceByName<IStreamIdSelector>(name) ?? _defaultStreamIdSelector;
 
 		KafkaAdapterFactory factory;
 		
@@ -121,7 +129,8 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
                 name,
                 streamsConfig,
                 cacheOptions,
-                deserializer
+                deserializer,
+                streamIdSelector
             );
         }
         else
@@ -130,7 +139,8 @@ public class KafkaAdapterFactory : IQueueAdapterFactory
                 services,
                 name,
                 streamsConfig,
-                cacheOptions
+                cacheOptions,
+                streamIdSelector
             );
         }
 
