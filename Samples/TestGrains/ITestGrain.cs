@@ -1,10 +1,9 @@
 ﻿using Orleans;
 using System.Threading.Tasks;
 
-namespace TestGrains
+namespace TestGrains;
+
+public interface ITestGrain : IGrainWithStringKey
 {
-	public interface ITestGrain : IGrainWithStringKey
-	{
-		Task<string> GetThePhrase();
-	}
+	Task<string> GetThePhrase();
 }

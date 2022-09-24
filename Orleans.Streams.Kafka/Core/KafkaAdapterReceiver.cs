@@ -13,189 +13,195 @@ using System.Threading;
 using System.Threading.Tasks;
 using SerializationContext = Orleans.Streams.Kafka.Serialization.SerializationContext;
 
-namespace Orleans.Streams.Kafka.Core
+namespace Orleans.Streams.Kafka.Core;
+
+public class KafkaAdapterReceiver : IQueueAdapterReceiver
 {
-	public class KafkaAdapterReceiver : IQueueAdapterReceiver
+	private readonly ILogger<KafkaAdapterReceiver> _logger;
+	private readonly string _providerName;
+	private readonly KafkaStreamOptions _options;
+	private readonly SerializationManager _serializationManager;
+	private readonly IGrainFactory _grainFactory;
+	private readonly IExternalStreamDeserializer _externalDeserializer;
+	private readonly QueueProperties _queueProperties;
+
+	private IConsumer<byte[], byte[]> _consumer;
+	private Task _commitPromise = Task.CompletedTask;
+	private Task<IList<IBatchContainer>> _consumePromise;
+
+	public KafkaAdapterReceiver(
+		string providerName,
+		QueueProperties queueProperties,
+		KafkaStreamOptions options,
+		SerializationManager serializationManager,
+		ILoggerFactory loggerFactory,
+		IGrainFactory grainFactory,
+		IExternalStreamDeserializer externalDeserializer
+	)
 	{
-		private readonly ILogger<KafkaAdapterReceiver> _logger;
-		private readonly string _providerName;
-		private readonly KafkaStreamOptions _options;
-		private readonly SerializationManager _serializationManager;
-		private readonly IGrainFactory _grainFactory;
-		private readonly IExternalStreamDeserializer _externalDeserializer;
-		private readonly QueueProperties _queueProperties;
+		_options = options ?? throw new ArgumentNullException(nameof(options));
 
-		private IConsumer<byte[], byte[]> _consumer;
-		private Task _commitPromise = Task.CompletedTask;
-		private Task<IList<IBatchContainer>> _consumePromise;
+		_providerName = providerName;
+		_queueProperties = queueProperties;
+		_serializationManager = serializationManager;
+		_grainFactory = grainFactory;
+		_externalDeserializer = externalDeserializer;
+		_logger = loggerFactory.CreateLogger<KafkaAdapterReceiver>();
+	}
 
-		public KafkaAdapterReceiver(
-			string providerName,
-			QueueProperties queueProperties,
-			KafkaStreamOptions options,
-			SerializationManager serializationManager,
-			ILoggerFactory loggerFactory,
-			IGrainFactory grainFactory,
-			IExternalStreamDeserializer externalDeserializer
-		)
+	public Task Initialize(TimeSpan timeout)
+	{
+		_consumer = new ConsumerBuilder<byte[], byte[]>(_options.ToConsumerProperties())
+			.SetErrorHandler((_, errorEvent) =>
+				_logger.LogError(
+					"Consume error reason: {Reason}, code: {Code}, is broker error: {ErrorType}",
+					errorEvent.Reason,
+					errorEvent.Code,
+					errorEvent.IsBrokerError
+				))
+			.Build();
+
+        var offsetMode = _options.ConsumeMode switch
+        {
+            ConsumeMode.LastCommittedMessage => Offset.Stored,
+            ConsumeMode.StreamEnd => Offset.End,
+            ConsumeMode.StreamStart => Offset.Beginning,
+            _ => Offset.Stored
+        };
+
+        _consumer.Assign(new TopicPartitionOffset(_queueProperties.Namespace, (int)_queueProperties.PartitionId, offsetMode));
+
+		return Task.CompletedTask;
+	}
+
+	public Task<IList<IBatchContainer>> GetQueueMessagesAsync(int maxCount)
+	{
+		var consumerRef = _consumer; // store direct ref, in case we are somehow asked to shutdown while we are receiving.
+
+		if (consumerRef == null)
+        {
+            return Task.FromResult<IList<IBatchContainer>>(new List<IBatchContainer>());
+        }
+
+        var cancellationSource = new CancellationTokenSource();
+		cancellationSource.CancelAfter(_options.PollBufferTimeout);
+
+		_consumePromise = Task.Run(
+			() => PollForMessages(
+				maxCount,
+				cancellationSource
+			),
+			cancellationSource.Token
+		);
+
+		return _consumePromise;
+	}
+
+	public async Task MessagesDeliveredAsync(IList<IBatchContainer> messages)
+	{
+		KafkaBatchContainer batchWithHighestOffset = null;
+
+		try
 		{
-			_options = options ?? throw new ArgumentNullException(nameof(options));
+			if (!messages.Any())
+            {
+                return;
+            }
 
-			_providerName = providerName;
-			_queueProperties = queueProperties;
-			_serializationManager = serializationManager;
-			_grainFactory = grainFactory;
-			_externalDeserializer = externalDeserializer;
-			_logger = loggerFactory.CreateLogger<KafkaAdapterReceiver>();
+            batchWithHighestOffset = messages
+				.Cast<KafkaBatchContainer>()
+				.Max();
+
+			_commitPromise = _consumer.Commit(batchWithHighestOffset);
+			await _commitPromise;
 		}
-
-		public Task Initialize(TimeSpan timeout)
+		catch (Exception ex)
 		{
-			_consumer = new ConsumerBuilder<byte[], byte[]>(_options.ToConsumerProperties())
-				.SetErrorHandler((sender, errorEvent) =>
-					_logger.LogError(
-						"Consume error reason: {reason}, code: {code}, is broker error: {errorType}",
-						errorEvent.Reason,
-						errorEvent.Code,
-						errorEvent.IsBrokerError
-					))
-				.Build();
-
-			var offsetMode = Offset.Stored;
-			switch (_options.ConsumeMode)
-			{
-				case ConsumeMode.LastCommittedMessage:
-					offsetMode = Offset.Stored;
-					break;
-				case ConsumeMode.StreamEnd:
-					offsetMode = Offset.End;
-					break;
-				case ConsumeMode.StreamStart:
-					offsetMode = Offset.Beginning;
-					break;
-			}
-
-			_consumer.Assign(new TopicPartitionOffset(_queueProperties.Namespace, (int)_queueProperties.PartitionId, offsetMode));
-
-			return Task.CompletedTask;
+			_logger.LogError(ex, "Failed to commit message offset: {Offset}", batchWithHighestOffset?.TopicPartitionOffSet);
+			throw;
 		}
+	}
 
-		public Task<IList<IBatchContainer>> GetQueueMessagesAsync(int maxCount)
+	public async Task Shutdown(TimeSpan timeout)
+	{
+		try
 		{
-			var consumerRef = _consumer; // store direct ref, in case we are somehow asked to shutdown while we are receiving.
+			var tasks = new List<Task>();
 
-			if (consumerRef == null)
-				return Task.FromResult<IList<IBatchContainer>>(new List<IBatchContainer>());
+			if (_commitPromise != null)
+            {
+                tasks.Add(_commitPromise);
+            }
 
-			var cancellationSource = new CancellationTokenSource();
-			cancellationSource.CancelAfter(_options.PollBufferTimeout);
+            if (_consumePromise != null)
+            {
+                tasks.Add(_consumePromise);
+            }
 
-			_consumePromise = Task.Run(
-				() => PollForMessages(
-					maxCount,
-					cancellationSource
-				),
-				cancellationSource.Token
-			);
-
-			return _consumePromise;
+            await Task.WhenAll(tasks);
 		}
-
-		public async Task MessagesDeliveredAsync(IList<IBatchContainer> messages)
+		finally
 		{
-			KafkaBatchContainer batchWithHighestOffset = null;
-
-			try
-			{
-				if (!messages.Any())
-					return;
-
-				batchWithHighestOffset = messages
-					.Cast<KafkaBatchContainer>()
-					.Max();
-
-				_commitPromise = _consumer.Commit(batchWithHighestOffset);
-				await _commitPromise;
-			}
-			catch (Exception ex)
-			{
-				_logger.LogError(ex, "Failed to commit message offset: {@offset}", batchWithHighestOffset?.TopicPartitionOffSet);
-				throw;
-			}
+			_consumer.Unassign();
+			_consumer.Unsubscribe();
+			_consumer.Close();
+			_consumer = null;
 		}
+	}
 
-		public async Task Shutdown(TimeSpan timeout)
+	private async Task<IList<IBatchContainer>> PollForMessages(int maxCount, CancellationTokenSource cancellation)
+	{
+		try
 		{
-			try
+			var batches = new List<IBatchContainer>();
+			for (var i = 0; i < maxCount && !cancellation.IsCancellationRequested; i++)
 			{
-				var tasks = new List<Task>();
+				var consumeResult = _consumer.Consume(_options.PollTimeout);
+				
+                if (consumeResult == null)
+                {
+                    break;
+                }
 
-				if (_commitPromise != null)
-					tasks.Add(_commitPromise);
+                var batchContainer = consumeResult.ToBatchContainer(
+					new SerializationContext
+					{
+						SerializationManager = _serializationManager,
+						ExternalStreamDeserializer = _externalDeserializer
+					},
+					_queueProperties
+				);
 
-				if (_consumePromise != null)
-					tasks.Add(_consumePromise);
+				await TrackMessage(batchContainer);
 
-				await Task.WhenAll(tasks);
+				batches.Add(batchContainer);
 			}
-			finally
-			{
-				_consumer.Unassign();
-				_consumer.Unsubscribe();
-				_consumer.Close();
-				_consumer = null;
-			}
+
+			return batches;
 		}
-
-		private async Task<IList<IBatchContainer>> PollForMessages(int maxCount, CancellationTokenSource cancellation)
+		catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested)
 		{
-			try
-			{
-				var batches = new List<IBatchContainer>();
-				for (var i = 0; i < maxCount && !cancellation.IsCancellationRequested; i++)
-				{
-					var consumeResult = _consumer.Consume(_options.PollTimeout);
-					if (consumeResult == null)
-						break;
-
-					var batchContainer = consumeResult.ToBatchContainer(
-						new SerializationContext
-						{
-							SerializationManager = _serializationManager,
-							ExternalStreamDeserializer = _externalDeserializer
-						},
-						_queueProperties
-					);
-
-					await TrackMessage(batchContainer);
-
-					batches.Add(batchContainer);
-				}
-
-				return batches;
-			}
-			catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested)
-			{
-				return new List<IBatchContainer>();
-			}
-			catch (Exception ex)
-			{
-				_logger.LogError(ex, "Failed to poll for messages queueId: {@queueProperties}", _queueProperties);
-				throw;
-			}
-			finally
-			{
-				cancellation.Dispose();
-			}
+			return new List<IBatchContainer>();
 		}
-
-		private Task TrackMessage(IBatchContainer container)
+		catch (Exception ex)
 		{
-			if (!_options.MessageTrackingEnabled)
-				return Task.CompletedTask;
-
-			var trackingGrain = _grainFactory.GetMessageTrackerGrain(_providerName, _queueProperties.QueueName);
-			return trackingGrain.Track(new Immutable<IBatchContainer>(container));
+			_logger.LogError(ex, "Failed to poll for messages queueId: {@QueueProperties}", _queueProperties);
+			throw;
 		}
+		finally
+		{
+			cancellation.Dispose();
+		}
+	}
+
+	private Task TrackMessage(IBatchContainer container)
+	{
+		if (!_options.MessageTrackingEnabled)
+        {
+            return Task.CompletedTask;
+        }
+
+        var trackingGrain = _grainFactory.GetMessageTrackerGrain(_providerName, _queueProperties.QueueName);
+		return trackingGrain.Track(new Immutable<IBatchContainer>(container));
 	}
 }

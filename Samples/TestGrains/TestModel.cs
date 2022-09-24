@@ -1,9 +1,8 @@
-﻿namespace TestGrains
-{
-	public class TestModel
-	{
-		public string Greeting { get; set; }
+﻿namespace TestGrains;
 
-		public override string ToString() => Greeting;
-	}
+public class TestModel
+{
+	public string Greeting { get; set; }
+
+	public override string ToString() => Greeting;
 }

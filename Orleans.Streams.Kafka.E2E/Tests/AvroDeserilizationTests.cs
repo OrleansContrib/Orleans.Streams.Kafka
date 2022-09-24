@@ -14,115 +14,116 @@ using System.Threading.Tasks;
 using Xunit;
 using Xunit.Sdk;
 
-namespace Orleans.Streams.Kafka.E2E.Tests
+namespace Orleans.Streams.Kafka.E2E.Tests;
+
+public class AvroDeserilizationTests_ProduceConsumeExternalMessage : TestBase
 {
-	public class AvroDeserilizationTests_ProduceConsumeExternalMessage : TestBase
+	private const int _receiveDelay = 500;
+
+	public AvroDeserilizationTests_ProduceConsumeExternalMessage()
 	{
-		private const int ReceiveDelay = 500;
+		Initialize<AvroClientBuilderConfigurator, AvroSiloBuilderConfigurator>(3);
+	}
 
-		public AvroDeserilizationTests_ProduceConsumeExternalMessage()
+	[Fact]
+	public async Task E2E()
+	{
+		var config = GetKafkaServerConfig();
+
+		var testMessage = TestModelAvro.Random();
+
+		var completion = new TaskCompletionSource<bool>();
+
+		var provider = Cluster.Client.GetStreamProvider(Consts.KafkaStreamProvider);
+		var stream = provider.GetStream<TestModelAvro>(Consts.StreamId4, Consts.StreamNamespaceExternalAvro);
+
+		await stream.QuickSubscribe((message, seq) =>
 		{
-			Initialize<AvroClientBuilderConfigurator, AvroSiloBuilderConfigurator>(3);
-		}
+			Assert.Equal(testMessage, message);
+			completion.SetResult(true);
+			return Task.CompletedTask;
+		});
 
-		[Fact]
-		public async Task E2E()
+		await Task.Delay(5000);
+
+		using (var schema = new CachedSchemaRegistryClient(new SchemaRegistryConfig
+		       {
+			       Url = "https://[host name]/schema-registry"
+		       }))
+		using (var producer = new ProducerBuilder<byte[], TestModelAvro>(config)
+			       .SetValueSerializer(new AvroSerializer<TestModelAvro>(schema).AsSyncOverAsync())
+			       .Build()
+		      )
 		{
-			var config = GetKafkaServerConfig();
-
-			var testMessage = TestModelAvro.Random();
-
-			var completion = new TaskCompletionSource<bool>();
-
-			var provider = Cluster.Client.GetStreamProvider(Consts.KafkaStreamProvider);
-			var stream = provider.GetStream<TestModelAvro>(Consts.StreamId4, Consts.StreamNamespaceExternalAvro);
-
-			await stream.QuickSubscribe((message, seq) =>
+			await producer.ProduceAsync(Consts.StreamNamespaceExternalAvro, new Message<byte[], TestModelAvro>
 			{
-				Assert.Equal(testMessage, message);
-				completion.SetResult(true);
-				return Task.CompletedTask;
+				Key = Encoding.UTF8.GetBytes(Consts.StreamId4),
+				Value = testMessage,
+				Timestamp = new Timestamp(DateTimeOffset.UtcNow)
 			});
-
-			await Task.Delay(5000);
-
-			using (var schema = new CachedSchemaRegistryClient(new SchemaRegistryConfig
-			{
-				Url = "https://[host name]/schema-registry"
-			}))
-			using (var producer = new ProducerBuilder<byte[], TestModelAvro>(config)
-				.SetValueSerializer(new AvroSerializer<TestModelAvro>(schema).AsSyncOverAsync())
-				.Build()
-			)
-			{
-				await producer.ProduceAsync(Consts.StreamNamespaceExternalAvro, new Message<byte[], TestModelAvro>
-				{
-					Key = Encoding.UTF8.GetBytes(Consts.StreamId4),
-					Value = testMessage,
-					Timestamp = new Timestamp(DateTimeOffset.UtcNow)
-				});
-			}
-
-			await Task.WhenAny(completion.Task, Task.Delay(ReceiveDelay * 4));
-
-			if (!completion.Task.IsCompleted)
-				throw new XunitException("Message not received.");
 		}
 
-		private static ClientConfig GetKafkaServerConfig()
-			=> new ClientConfig
+		await Task.WhenAny(completion.Task, Task.Delay(_receiveDelay * 4));
+
+		if (!completion.Task.IsCompleted)
+        {
+            throw new XunitException("Message not received.");
+        }
+    }
+
+	private static ClientConfig GetKafkaServerConfig()
+		=> new()
+        {
+			BootstrapServers = string.Join(',', Brokers)
+		};
+}
+
+public class AvroClientBuilderConfigurator : IClientBuilderConfigurator
+{
+	public virtual void Configure(IConfiguration configuration, IClientBuilder clientBuilder)
+		=> clientBuilder
+			.AddKafka(Consts.KafkaStreamProvider)
+			.WithOptions(options =>
 			{
-				BootstrapServers = string.Join(',', Brokers)
-			};
-	}
+				options.BrokerList = TestBase.Brokers;
+				options.ConsumerGroupId = "E2EGroup_client";
 
-	public class AvroClientBuilderConfigurator : IClientBuilderConfigurator
-	{
-		public virtual void Configure(IConfiguration configuration, IClientBuilder clientBuilder)
-			=> clientBuilder
-				.AddKafka(Consts.KafkaStreamProvider)
-				.WithOptions(options =>
-				{
-					options.BrokerList = TestBase.Brokers;
-					options.ConsumerGroupId = "E2EGroup_client";
+				options
+					.AddExternalTopic<TestModelAvro>(Consts.StreamNamespaceExternalAvro)
+					;
 
-					options
-						.AddExternalTopic<TestModelAvro>(Consts.StreamNamespaceExternalAvro)
-						;
+				options.PollTimeout = TimeSpan.FromMilliseconds(10);
+				options.ConsumeMode = ConsumeMode.StreamEnd;
+			})
+			.AddAvro("https://[host name]/schema-registry")
+			.Build()
+			.ConfigureApplicationParts(parts =>
+				parts.AddApplicationPart(typeof(RoundTripGrain).Assembly).WithReferences())
+	;
 
-					options.PollTimeout = TimeSpan.FromMilliseconds(10);
-					options.ConsumeMode = ConsumeMode.StreamEnd;
-				})
-				.AddAvro("https://[host name]/schema-registry")
-				.Build()
-				.ConfigureApplicationParts(parts =>
-					parts.AddApplicationPart(typeof(RoundTripGrain).Assembly).WithReferences())
-				;
+}
 
-	}
+public class AvroSiloBuilderConfigurator : ISiloBuilderConfigurator
+{
+	public void Configure(ISiloHostBuilder hostBuilder)
+		=> hostBuilder
+			.AddMemoryGrainStorage("PubSubStore")
+			.AddKafka(Consts.KafkaStreamProvider)
+			.WithOptions(options =>
+			{
+				options.BrokerList = TestBase.Brokers;
+				options.ConsumerGroupId = "E2EGroup";
+				options.ConsumeMode = ConsumeMode.StreamEnd;
+				options.PollTimeout = TimeSpan.FromMilliseconds(10);
+				options.MessageTrackingEnabled = true;
 
-	public class AvroSiloBuilderConfigurator : ISiloBuilderConfigurator
-	{
-		public void Configure(ISiloHostBuilder hostBuilder)
-			=> hostBuilder
-				.AddMemoryGrainStorage("PubSubStore")
-				.AddKafka(Consts.KafkaStreamProvider)
-				.WithOptions(options =>
-				{
-					options.BrokerList = TestBase.Brokers;
-					options.ConsumerGroupId = "E2EGroup";
-					options.ConsumeMode = ConsumeMode.StreamEnd;
-					options.PollTimeout = TimeSpan.FromMilliseconds(10);
-					options.MessageTrackingEnabled = true;
-
-					options
-						.AddExternalTopic<TestModelAvro>(Consts.StreamNamespaceExternalAvro)
-						;
-				})
-				.AddAvro("https://[host name]/schema-registry")
-				.AddLoggingTracker()
-				.Build()
-				.ConfigureApplicationParts(parts =>
-					parts.AddApplicationPart(typeof(RoundTripGrain).Assembly).WithReferences());
-	}
+				options
+					.AddExternalTopic<TestModelAvro>(Consts.StreamNamespaceExternalAvro)
+					;
+			})
+			.AddAvro("https://[host name]/schema-registry")
+			.AddLoggingTracker()
+			.Build()
+			.ConfigureApplicationParts(parts =>
+				parts.AddApplicationPart(typeof(RoundTripGrain).Assembly).WithReferences());
 }

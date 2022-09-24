@@ -6,43 +6,42 @@ using System.Collections.Generic;
 using System.Text;
 using SerializationContext = Orleans.Streams.Kafka.Serialization.SerializationContext;
 
-namespace Orleans.Streams.Kafka.Consumer
+namespace Orleans.Streams.Kafka.Consumer;
+
+public static class ConsumeResultExtensions
 {
-	public static class ConsumeResultExtensions
+	public static KafkaBatchContainer ToBatchContainer(
+		this ConsumeResult<byte[], byte[]> result,
+		SerializationContext serializationContext,
+		QueueProperties queueProperties
+	)
 	{
-		public static KafkaBatchContainer ToBatchContainer(
-			this ConsumeResult<byte[], byte[]> result,
-			SerializationContext serializationContext,
-			QueueProperties queueProperties
-		)
+		var sequence = new EventSequenceTokenV2(result.Offset.Value);
+
+		if (queueProperties.IsExternal)
 		{
-			var sequence = new EventSequenceTokenV2(result.Offset.Value);
+			var key = Encoding.UTF8.GetString(result.Message.Key);
 
-			if (queueProperties.IsExternal)
-			{
-				var key = Encoding.UTF8.GetString(result.Message.Key);
+			var message = serializationContext
+				.ExternalStreamDeserializer
+				.Deserialize(queueProperties, queueProperties.ExternalContractType, result);
 
-				var message = serializationContext
-					.ExternalStreamDeserializer
-					.Deserialize(queueProperties, queueProperties.ExternalContractType, result);
-
-				return new KafkaBatchContainer(
-					StreamProviderUtils.GenerateStreamGuid(key),
-					queueProperties.Namespace,
-					new List<object> { message },
-					null,
-					sequence,
-					result.TopicPartitionOffset
-				);
-			}
-
-			var serializationManager = serializationContext.SerializationManager;
-			var batchContainer = serializationManager.DeserializeFromByteArray<KafkaBatchContainer>(result.Message.Value);
-
-			batchContainer.SequenceToken ??= sequence;
-			batchContainer.TopicPartitionOffSet = result.TopicPartitionOffset;
-
-			return batchContainer;
+			return new KafkaBatchContainer(
+				StreamProviderUtils.GenerateStreamGuid(key),
+				queueProperties.Namespace,
+				new List<object> { message },
+				null,
+				sequence,
+				result.TopicPartitionOffset
+			);
 		}
+
+		var serializationManager = serializationContext.SerializationManager;
+		var batchContainer = serializationManager.DeserializeFromByteArray<KafkaBatchContainer>(result.Message.Value);
+
+		batchContainer.SequenceToken ??= sequence;
+		batchContainer.TopicPartitionOffSet = result.TopicPartitionOffset;
+
+		return batchContainer;
 	}
 }
